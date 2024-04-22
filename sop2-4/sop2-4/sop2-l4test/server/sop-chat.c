@@ -15,8 +15,7 @@ void usage(char *program_name) {
     exit(EXIT_FAILURE);
 }
 
-void serverWork(int localInSocket, int tcpInSocket)
-{
+void serverWork(int localInSocket, int tcpInSocket, char* key) {
     int epoll;
 
     if ((epoll = epoll_create1(0)) == -1)
@@ -26,14 +25,12 @@ void serverWork(int localInSocket, int tcpInSocket)
     event.events = EPOLLIN;
     event.data.fd = localInSocket;
 
-    if (epoll_ctl(epoll, EPOLL_CTL_ADD, localInSocket, &event) == -1)
-    {
+    if (epoll_ctl(epoll, EPOLL_CTL_ADD, localInSocket, &event) == -1) {
         perror("epoll_ctl: listen sock");
         exit(EXIT_FAILURE);
     }
     event.data.fd = tcpInSocket;
-    if (epoll_ctl(epoll, EPOLL_CTL_ADD, tcpInSocket, &event) == -1)
-    {
+    if (epoll_ctl(epoll, EPOLL_CTL_ADD, tcpInSocket, &event) == -1) {
         perror("epoll_ctl: listen sock");
         exit(EXIT_FAILURE);
     }
@@ -44,31 +41,57 @@ void serverWork(int localInSocket, int tcpInSocket)
     sigprocmask(SIG_BLOCK, &new, &old);
     int running = 1;
     ssize_t size;
-    int32_t data[16];
-    while (running)
-    {
-        if ((nfds = epoll_pwait(epoll, events, MAX_EVENTS, -1, &old)) > 0)
-        {
+    char data[BUFF_SIZE];
+    char name[NAME_SIZE];
+    char message[MESSAGE_SIZE];
+
+    while (running) {
+        if ((nfds = epoll_pwait(epoll, events, MAX_EVENTS, -1, &old)) > 0) {
             fprintf(stderr, "%d\n", nfds);
             //running = 0;
-            for (int i = 0; i < nfds; i++)
-            {
+            for (int i = 0; i < nfds; i++) {
                 int client_socket = add_new_client(events[i].data.fd);
 
-                if ((size = bulk_read(client_socket, (char*)data, sizeof(int32_t[16]))) < 0)
+                if ((size = bulk_read(client_socket, (char *) data, BUFF_SIZE)) < 0)
                     ERR("read:");
-                if (size == sizeof(int32_t[16]))
-                {
-                    running = 0;
-                    sleep(5);
+                if (size == BUFF_SIZE) {
+                    memcpy(name, data, NAME_SIZE);
+                    memcpy(message, data + MESSAGE_OFFSET, MESSAGE_SIZE);
+                    printf("Name: %s, message: %s\n", name, message);
+
+                    if (strcmp(message, key) == 0) {
+                        if (bulk_write(client_socket, data, BUFF_SIZE) < 0 && errno != SIGPIPE)
+                            ERR("write");
+
+                        fprintf(stderr, "Authorization passed\n");
+
+                        switch (fork()) {
+                            case 0:
+                                for (int j = 0; j < 5; j++) {
+                                    if ((size = bulk_read(client_socket, data, BUFF_SIZE)) < 0)
+                                        ERR("read");
+
+                                    memcpy(name, data, NAME_SIZE);
+                                    memcpy(message, data + MESSAGE_OFFSET, MESSAGE_SIZE);
+                                    printf("%s wrote: %s\n", name, message);
+                                }
+                                if (TEMP_FAILURE_RETRY(close(client_socket)) < 0)
+                                    ERR("close");
+
+                                return EXIT_SUCCESS;
+                            case -1:
+                                ERR("fork");
+                            default:
+                                break;
+                        }
+
+                    }
                 }
-                if (TEMP_FAILURE_RETRY(close(client_socket)) < 0)
-                    ERR("close");
 
             }
-        }
-        else
-        {
+
+
+        } else {
             if (errno == EINTR)
                 continue;
             else
@@ -77,9 +100,10 @@ void serverWork(int localInSocket, int tcpInSocket)
     }
     if (TEMP_FAILURE_RETRY(close(epoll)) < 0)
         ERR("close");
-    sigprocmask(SIG_UNBLOCK, &new , NULL);
+    sigprocmask(SIG_UNBLOCK, &new, NULL);
 
 }
+
 
 int main(int argc, char **argv) {
     char *program_name = argv[0];
@@ -94,7 +118,7 @@ int main(int argc, char **argv) {
     }
 
     char *key = argv[2];
-    char* name = "test";
+    char* name = "localhost";
 
     if(sethandler(SIG_IGN, SIGPIPE))
         ERR("Setting SIGPIPE: ");
@@ -107,7 +131,7 @@ int main(int argc, char **argv) {
     tcpInSocket = bind_tcp_socket(port, BACKLOG_SIZE);
     flags = fcntl(tcpInSocket, F_GETFL) |  O_NONBLOCK;
     fcntl(tcpInSocket, F_SETFL, flags);
-    serverWork(localInSocket, tcpInSocket);
+    serverWork(localInSocket, tcpInSocket, key);
 
     if (TEMP_FAILURE_RETRY(close(localInSocket)) < 0)
         ERR("close");
