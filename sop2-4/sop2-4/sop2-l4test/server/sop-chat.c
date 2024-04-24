@@ -15,6 +15,24 @@ void usage(char *program_name) {
     exit(EXIT_FAILURE);
 }
 
+void chatWork(int client_socket, char* data)
+{
+    ssize_t  size;
+    char name[NAME_SIZE];
+    char message[MESSAGE_SIZE];
+
+    while(1) {
+        if ((size = bulk_read(client_socket, data, BUFF_SIZE)) < 0)
+            ERR("read");
+
+        memcpy(name, data, NAME_SIZE);
+        memcpy(message, data + MESSAGE_OFFSET, MESSAGE_SIZE);
+        printf("%s wrote: %s\n", name, message);
+    }
+    if (TEMP_FAILURE_RETRY(close(client_socket)) < 0)
+        ERR("close");
+}
+
 void serverWork(int localInSocket, int tcpInSocket, char* key) {
     int epoll;
 
@@ -44,53 +62,50 @@ void serverWork(int localInSocket, int tcpInSocket, char* key) {
     char data[BUFF_SIZE];
     char name[NAME_SIZE];
     char message[MESSAGE_SIZE];
+    int clients = 0;
 
     while (running) {
         if ((nfds = epoll_pwait(epoll, events, MAX_EVENTS, -1, &old)) > 0) {
             fprintf(stderr, "%d\n", nfds);
             //running = 0;
             for (int i = 0; i < nfds; i++) {
-                int client_socket = add_new_client(events[i].data.fd);
+                if (clients < 4) {
+                    int client_socket = add_new_client(events[i].data.fd);
+                    fprintf(stderr, "Number of clients: %d\n", clients);
+                    clients++;
 
-                if ((size = bulk_read(client_socket, (char *) data, BUFF_SIZE)) < 0)
-                    ERR("read:");
-                if (size == BUFF_SIZE) {
-                    memcpy(name, data, NAME_SIZE);
-                    memcpy(message, data + MESSAGE_OFFSET, MESSAGE_SIZE);
-                    printf("Name: %s, message: %s\n", name, message);
+                    if ((size = bulk_read(client_socket, (char*) data, BUFF_SIZE)) < 0)
+                        ERR("read:");
+                    if (size == BUFF_SIZE) {
+                        memcpy(name, data, NAME_SIZE);
+                        memcpy(message, data + MESSAGE_OFFSET, MESSAGE_SIZE);
+                        printf("Name: %s, message: %s\n", name, message);
 
-                    if (strcmp(message, key) == 0) {
-                        if (bulk_write(client_socket, data, BUFF_SIZE) < 0 && errno != SIGPIPE)
-                            ERR("write");
+                        if (strcmp(message, key) == 0) {
+                            if (bulk_write(client_socket, data, BUFF_SIZE) < 0 && errno != SIGPIPE)
+                                ERR("write");
 
-                        fprintf(stderr, "Authorization passed\n");
+                            fprintf(stderr, "Authorization passed\n");
 
-                        switch (fork()) {
-                            case 0:
-                                for (int j = 0; j < 5; j++) {
-                                    if ((size = bulk_read(client_socket, data, BUFF_SIZE)) < 0)
-                                        ERR("read");
-
-                                    memcpy(name, data, NAME_SIZE);
-                                    memcpy(message, data + MESSAGE_OFFSET, MESSAGE_SIZE);
-                                    printf("%s wrote: %s\n", name, message);
-                                }
-                                if (TEMP_FAILURE_RETRY(close(client_socket)) < 0)
-                                    ERR("close");
-
-                                return EXIT_SUCCESS;
-                            case -1:
-                                ERR("fork");
-                            default:
-                                break;
+                            switch (fork()) {
+                                case 0:
+                                    chatWork(client_socket, data);
+                                    return;
+                                case -1:
+                                    ERR("fork");
+                                default:
+                                    break;
+                            }
                         }
-
                     }
+                }
+                else
+                {
+                    fprintf(stderr, "Could not add a client - too much already connected\n");
+                    running = 0;
                 }
 
             }
-
-
         } else {
             if (errno == EINTR)
                 continue;
